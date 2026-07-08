@@ -248,6 +248,54 @@ def load_config(path: Path) -> ReductionConfig:
     return ReductionConfig(**kwargs)
 
 
+def validate_inputs(cfg: ReductionConfig) -> list[str]:
+    """Check that every input path referenced by the config exists.
+
+    Verifies the data directory and its FITS and dark sub-directories are
+    present, that the I0, I1, and mask paths exist and are files, and that at
+    least one ``.fits`` file is present in the FITS sub-directory. Only input
+    paths are checked; ``results_root`` is an output and is created on demand.
+
+    Args:
+        cfg: The reduction configuration to validate.
+
+    Returns:
+        A list of human-readable problem descriptions; empty if all inputs
+        are present.
+    """
+    problems: list[str] = []
+
+    if not cfg.data_path.is_dir():
+        problems.append(f"data_path is not a directory: {cfg.data_path}")
+    if not cfg.fits_path.is_dir():
+        problems.append(f"fits sub-directory is not a directory: {cfg.fits_path}")
+    if not cfg.dark_path.is_dir():
+        problems.append(f"dark sub-directory is not a directory: {cfg.dark_path}")
+
+    for label, path in (
+        ("i0_path", cfg.i0_path),
+        ("i1_path", cfg.i1_path),
+        ("mask_path", cfg.mask_path),
+    ):
+        if not path.is_file():
+            problems.append(f"{label} is not a file: {path}")
+
+    # Only worth scanning for .fits content if the directory itself exists.
+    if cfg.fits_path.is_dir():
+        try:
+            has_fits = any(
+                entry.is_file() and entry.suffix.lower() == ".fits"
+                for entry in cfg.fits_path.iterdir()
+            )
+        except OSError as exc:
+            problems.append(f"could not scan {cfg.fits_path} for .fits files: {exc}")
+        else:
+            if not has_fits:
+                problems.append(f"no .fits files found in {cfg.fits_path}")
+
+    return problems
+
+
 def resolve_config_path(explicit: Path | None) -> Path:
     """Determine which config file to use.
 

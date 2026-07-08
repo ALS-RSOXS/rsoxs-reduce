@@ -6,7 +6,12 @@ from pathlib import Path
 import typer
 
 from rsoxs_reduce.analysis import compute_isi, iqe_to_table, select_energies
-from rsoxs_reduce.config import ReductionConfig, load_config, resolve_config_path
+from rsoxs_reduce.config import (
+    ReductionConfig,
+    load_config,
+    resolve_config_path,
+    validate_inputs,
+)
 from rsoxs_reduce.io_utils import prepare_results_dir, write_dat
 from rsoxs_reduce.metadata import build_header
 
@@ -37,6 +42,27 @@ def _planned_outputs(
     if detector_2d:
         outputs.append(out_dir / "detector_2d")
     return outputs
+
+
+def _validate_or_abort(cfg: ReductionConfig) -> None:
+    """Abort with a non-zero exit code if any configured input path is missing.
+
+    Args:
+        cfg: The reduction configuration to validate.
+
+    Raises:
+        typer.Exit: With code 1 if one or more input paths are invalid.
+    """
+    problems = validate_inputs(cfg)
+    if problems:
+        logger.error(
+            f"Config validation failed ({len(problems)} problem(s)); "
+            "nothing was loaded or written:"
+        )
+        for problem in problems:
+            logger.error(f"  - {problem}")
+        logger.error("Check the [paths] section of your config and try again.")
+        raise typer.Exit(code=1)
 
 
 def _apply_overrides(
@@ -127,6 +153,8 @@ def main(
         for path in planned:
             logger.info(f"  {path}")
         raise typer.Exit()
+
+    _validate_or_abort(cfg)
 
     dat_files = [p for p in planned if p.suffix == ".dat"]
     existing = [p for p in dat_files if p.exists()]
