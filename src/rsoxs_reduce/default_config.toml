@@ -1,0 +1,55 @@
+# Bundled fallback configuration template.
+#
+# The CLI uses a config file in this order:
+#   1. the path given to --config
+#   2. ./reduction_config.toml in the current working directory
+#   3. this bundled default
+#
+# Copy this to `reduction_config.toml` next to your data, replace the placeholder
+# paths, and fill in the [samples] map for your beamtime. On Windows use
+# single-quoted TOML literal strings for paths, e.g. 'C:\data\scan'.
+
+[paths]
+data_path = "path/to/beamtime/data"
+fits_subdir = "fits"
+dark_subdir = "fits"
+i0_path = "path/to/i0.txt"
+i1_path = "path/to/i1.txt"
+mask_path = "path/to/mask.hdf"
+results_root = "results"
+
+[loader]
+corr_mode = "als"
+exposure_offset = 0.0
+data_collected_after_mar2021 = true
+dark_subtract = true
+dark_pedestal = 200
+
+[geometry]
+ni_distance = 0.0
+ni_bcx = 0.0
+ni_bcy = 0.0
+ni_pixsize_x = 0.0096
+ni_pixsize_y = 0.0096
+
+[reduction]
+integration_method = "csr"
+polarization = "0"
+energy_match_decimals = 1
+# q_min = 0.001   # uncomment to bound the ISI integral
+# q_max = 0.05
+
+[plotting]
+detector_vmin = 1e-3
+detector_vmax = 1e5
+detector_dpi = 72
+plot_dpi = 150
+waterfall_factor = 10.0
+colormap = "viridis"
+
+[md_filter]
+"CCD Camera Shutter Inhibit" = 0
+
+# Map scan numbers to sample names for your beamtime, e.g.:
+[samples]
+# 12345 = "SampleA_ESCAN"
