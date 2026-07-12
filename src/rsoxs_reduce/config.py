@@ -55,6 +55,19 @@ class ReductionConfig:
         plot_dpi: Output resolution for line plots.
         waterfall_factor: Multiplicative offset between successive waterfall curves.
         colormap: Matplotlib colormap used to color curves by energy.
+        batch_size: Energies to load and reduce per batch to bound memory; 0
+            loads and reduces the whole scan at once (the default).
+        chi_width: Azimuthal half-width in degrees for chi slices and anisotropy
+            (a slice at angle theta averages ``chi in [theta - chi_width,
+            theta + chi_width]``).
+        anisotropy: Whether to write the A(q, E) anisotropy ``.dat``.
+        anisotropy_plot: Whether to plot A(q, E) (all energies overlaid).
+        integrated_anisotropy: Whether to write and plot the q-integrated
+            anisotropy versus energy.
+        iqchi_dat: Whether to write the full I(q, chi) ``.dat`` per energy.
+        iqchi_plot: Whether to plot the full I(q, chi) map per energy.
+        chi_slices: Center angles in degrees for additional chi-slice output
+            columns/curves; empty means the chi-average only.
         md_filter: Metadata filter passed to ``loadFileSeries``.
         samples: Scan-number to sample-name map (beamtime specific).
     """
@@ -97,7 +110,20 @@ class ReductionConfig:
     waterfall_factor: float = 10.0
     colormap: str = "viridis"
 
+    # Processing ([processing] section).
+    batch_size: int = 0
+
+    # Output extras ([output] section). The chi-average I(q, E) is always
+    # produced; everything here is additive and off by default.
+    chi_width: float = 5.0
+    anisotropy: bool = False
+    anisotropy_plot: bool = False
+    integrated_anisotropy: bool = False
+    iqchi_dat: bool = False
+    iqchi_plot: bool = False
+
     # Collections.
+    chi_slices: list[float] = field(default_factory=list)
     stack_dims: list[str] = field(default_factory=lambda: ["energy", "polarization"])
     md_filter: dict[str, int] = field(
         default_factory=lambda: {"CCD Camera Shutter Inhibit": 0}
@@ -165,6 +191,18 @@ _SECTIONS: dict[str, tuple[str, ...]] = {
         "plot_dpi",
         "waterfall_factor",
         "colormap",
+    ),
+    "processing": (
+        "batch_size",
+    ),
+    "output": (
+        "chi_slices",
+        "chi_width",
+        "anisotropy",
+        "anisotropy_plot",
+        "integrated_anisotropy",
+        "iqchi_dat",
+        "iqchi_plot",
     ),
 }
 _PATH_FIELDS: frozenset[str] = frozenset(

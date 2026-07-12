@@ -47,6 +47,32 @@ plot_dpi = 150
 waterfall_factor = 10.0
 colormap = "viridis"
 
+[processing]
+# Energies to load and reduce per batch, to bound peak memory on large scans.
+# 0 (default) loads and reduces the whole scan at once. Results are identical
+# either way; batching only changes how many raw images are resident at once.
+# Override on the command line with --batch-size.
+batch_size = 0
+
+[output]
+# The chi-averaged I(q, E) .dat and plots are always produced. Everything below
+# is additive and off by default.
+#
+# Chi slices: additional azimuthal wedges added as columns to Ivsq.dat and as
+# curves on the Ivsq plots. Give center angles (deg); empty = chi-average only.
+chi_slices = []            # e.g. [0, 90]
+chi_width = 5.0            # half-width per slice in deg (+/- around each center)
+#
+# Anisotropy A(q, E) via PyHyperScattering's AR = (I_para - I_perp)/(I_para + I_perp),
+# with para = chi 0 deg and perp = chi -90 deg, both using chi_width above.
+anisotropy = false             # write {sample}_Avsq.dat
+anisotropy_plot = false        # plot A(q, E), all energies overlaid, y in [-1, 1]
+integrated_anisotropy = false  # write + plot integral A(q,E) dq vs energy (uses q_min/q_max)
+#
+# Full I(q, chi) per energy.
+iqchi_dat = false          # write 2D q x chi .dat per energy under iqchi/
+iqchi_plot = false         # write 2D q x chi heatmap per energy under iqchi/
+
 [md_filter]
 "CCD Camera Shutter Inhibit" = 0
 
