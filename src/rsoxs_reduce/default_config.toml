@@ -14,7 +14,7 @@ data_path = "path/to/beamtime/data"
 fits_subdir = "fits"
 dark_subdir = "fits"
 i0_path = "path/to/i0.txt"
-i1_path = "path/to/i1.txt"
+i1_path = "path/to/i1.txt"   # omit this line, or set to "" or "none", to reduce without the I1 correction
 mask_path = "path/to/mask.hdf"
 results_root = "results"
 
@@ -29,6 +29,9 @@ dark_pedestal = 200
 ni_distance = 0.0
 ni_bcx = 0.0
 ni_bcy = 0.0
+ni_tiltx = 0.0
+ni_tilty = 0.0
+tilt_units = "degrees"   # unit of ni_tiltx/ni_tilty: "degrees" (default) or "radians"
 ni_pixsize_x = 0.0096
 ni_pixsize_y = 0.0096
 
@@ -36,6 +39,9 @@ ni_pixsize_y = 0.0096
 integration_method = "csr"
 polarization = "0"
 energy_match_decimals = 1
+# Only reduce these energies (eV), matched to energy_match_decimals. Empty or
+# omitted = all energies. The --energy CLI option overrides this list.
+energies = []            # e.g. [285.2, 286.0, 287.5]
 # q_min = 0.001   # uncomment to bound the ISI integral
 # q_max = 0.05
 

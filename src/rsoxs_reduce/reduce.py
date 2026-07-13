@@ -322,7 +322,8 @@ def main(
         "--energy",
         "-e",
         help="Energy (eV) to include; repeat for several, e.g. -e 285.2 -e 286.0. "
-        "Matched to the nearest tenth. Default: all energies.",
+        "Matched to the nearest tenth. Overrides [reduction].energies in the "
+        "config. Default: the config list, or all energies if it is empty.",
     ),
     integration_method: str | None = typer.Option(
         None, "--integration-method", help="Override the pyFAI integration method."
@@ -402,10 +403,14 @@ def main(
         setup_common_qgrid,
     )
 
+    # Energy selection: the --energy CLI option overrides the config's
+    # [reduction].energies list; empty means all energies.
+    requested_energies = list(energy) if energy else list(cfg.energies)
+
     loader = build_loader(cfg)
     integrator = build_integrator(cfg)
     results_dir = prepare_results_dir(cfg.results_root, sample)
-    header = build_header(cfg, file_filter, sample, energy, config_path)
+    header = build_header(cfg, file_filter, sample, requested_energies, config_path)
 
     iqchi_dir = results_dir / "iqchi"
     if cfg.iqchi_dat or cfg.iqchi_plot:
@@ -417,7 +422,7 @@ def main(
         prepare_loader(loader, file_filter, cfg)
         entries, energies = enumerate_scan(loader, file_filter, cfg)
         entries, energies = filter_scan_energies(
-            entries, energies, energy, cfg.energy_match_decimals
+            entries, energies, requested_energies, cfg.energy_match_decimals
         )
         if not energies:
             logger.error("No energies to process after filtering; nothing written.")
@@ -442,10 +447,13 @@ def main(
         stacks: "Iterator[xr.DataArray]" = _stacks()
     else:
         data = load_stack(loader, file_filter, cfg)
-        if energy:
-            data = select_energies(data, energy, decimals=cfg.energy_match_decimals)
+        if requested_energies:
+            data = select_energies(
+                data, requested_energies, decimals=cfg.energy_match_decimals
+            )
             logger.info(
-                f"Selected {data.sizes['energy']} energies matching {sorted(energy)}."
+                f"Selected {data.sizes['energy']} energies matching "
+                f"{sorted(requested_energies)}."
             )
         stacks = iter([data])
 

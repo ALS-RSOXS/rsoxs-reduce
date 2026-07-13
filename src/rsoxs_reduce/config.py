@@ -8,6 +8,7 @@ is fully described by the TOML, which is also embedded verbatim into the output
 """
 
 import logging
+import math
 import tomllib
 from dataclasses import dataclass, field, fields
 from importlib.resources import files
@@ -30,7 +31,9 @@ class ReductionConfig:
         fits_subdir: Sub-directory (under ``data_path``) containing the FITS series.
         dark_subdir: Sub-directory (under ``data_path``) containing the dark frames.
         i0_path: Path to the I0 normalization file.
-        i1_path: Path to the I1 normalization file.
+        i1_path: Path to the I1 normalization file, or None to reduce without
+            the I1 correction (omit the config key, or set it to an empty
+            string or ``"none"``).
         mask_path: Path to the nika-format detector mask.
         results_root: Root directory into which ``{sample}/`` folders are written.
         corr_mode: Loader correction mode.
@@ -41,12 +44,19 @@ class ReductionConfig:
         ni_distance: Sample-detector distance (nika geometry).
         ni_bcx: Beam-center x in pixels (nika geometry).
         ni_bcy: Beam-center y in pixels (nika geometry).
+        ni_tiltx: Detector tilt x in the unit given by ``tilt_units``.
+        ni_tilty: Detector tilt y in the unit given by ``tilt_units``.
+        tilt_units: Unit of ``ni_tiltx``/``ni_tilty`` in the config, either
+            ``"degrees"`` (default) or ``"radians"``; converted to the degrees
+            that PyHyperScattering's nika geometry expects.
         ni_pixsize_x: Pixel size in x (mm).
         ni_pixsize_y: Pixel size in y (mm).
         integration_method: pyFAI integration method (``csr`` CPU, ``csr_ocl`` OpenCL).
         polarization: Polarization coordinate value to select after integration.
         stack_dims: Dimensions passed to ``loadFileSeries``.
-        energy_match_decimals: Decimal places used when matching ``--energy`` values.
+        energy_match_decimals: Decimal places used when matching energy values.
+        energies: Energies (eV) to reduce; empty means all. Overridden by the
+            ``--energy`` CLI option when that is given.
         q_min: Lower q bound for the ISI integral, or None for no lower bound.
         q_max: Upper q bound for the ISI integral, or None for no upper bound.
         detector_vmin: Lower bound of the 2D detector log color scale.
@@ -77,7 +87,7 @@ class ReductionConfig:
     fits_subdir: str = "fits"
     dark_subdir: str = "fits"
     i0_path: Path = Path("i0.txt")
-    i1_path: Path = Path("i1.txt")
+    i1_path: Path | None = None
     mask_path: Path = Path("mask.hdf")
     results_root: Path = Path("results")
 
@@ -92,6 +102,9 @@ class ReductionConfig:
     ni_distance: float = 74.7688
     ni_bcx: float = 1831.35
     ni_bcy: float = 2101.49
+    ni_tiltx: float = 0.0
+    ni_tilty: float = 0.0
+    tilt_units: str = "degrees"
     ni_pixsize_x: float = 0.0096
     ni_pixsize_y: float = 0.0096
 
@@ -123,6 +136,7 @@ class ReductionConfig:
     iqchi_plot: bool = False
 
     # Collections.
+    energies: list[float] = field(default_factory=list)
     chi_slices: list[float] = field(default_factory=list)
     stack_dims: list[str] = field(default_factory=lambda: ["energy", "polarization"])
     md_filter: dict[str, int] = field(
@@ -139,6 +153,38 @@ class ReductionConfig:
     def dark_path(self) -> Path:
         """Full path to the dark-frame directory."""
         return self.data_path / self.dark_subdir
+
+    def _tilt_in_degrees(self, value: float) -> float:
+        """Convert a tilt from the configured ``tilt_units`` to degrees.
+
+        Args:
+            value: Tilt value in the unit given by ``tilt_units``.
+
+        Returns:
+            The tilt in degrees (the unit PyHyperScattering's nika geometry
+            expects).
+
+        Raises:
+            ValueError: If ``tilt_units`` is not ``"degrees"`` or ``"radians"``.
+        """
+        units = self.tilt_units.strip().lower()
+        if units in ("deg", "degree", "degrees"):
+            return value
+        if units in ("rad", "radian", "radians"):
+            return math.degrees(value)
+        raise ValueError(
+            f"tilt_units must be 'degrees' or 'radians', got {self.tilt_units!r}."
+        )
+
+    @property
+    def ni_tiltx_deg(self) -> float:
+        """Detector x tilt in degrees, converted from the configured unit."""
+        return self._tilt_in_degrees(self.ni_tiltx)
+
+    @property
+    def ni_tilty_deg(self) -> float:
+        """Detector y tilt in degrees, converted from the configured unit."""
+        return self._tilt_in_degrees(self.ni_tilty)
 
     def sample_name(self, file_filter: int) -> str:
         """Return the sample name for a scan number.
@@ -174,6 +220,9 @@ _SECTIONS: dict[str, tuple[str, ...]] = {
         "ni_distance",
         "ni_bcx",
         "ni_bcy",
+        "ni_tiltx",
+        "ni_tilty",
+        "tilt_units",
         "ni_pixsize_x",
         "ni_pixsize_y",
     ),
@@ -181,6 +230,7 @@ _SECTIONS: dict[str, tuple[str, ...]] = {
         "integration_method",
         "polarization",
         "energy_match_decimals",
+        "energies",
         "q_min",
         "q_max",
     ),
@@ -192,9 +242,7 @@ _SECTIONS: dict[str, tuple[str, ...]] = {
         "waterfall_factor",
         "colormap",
     ),
-    "processing": (
-        "batch_size",
-    ),
+    "processing": ("batch_size",),
     "output": (
         "chi_slices",
         "chi_width",
@@ -208,6 +256,10 @@ _SECTIONS: dict[str, tuple[str, ...]] = {
 _PATH_FIELDS: frozenset[str] = frozenset(
     {"data_path", "i0_path", "i1_path", "mask_path", "results_root"}
 )
+# Path fields that may be left empty in the config, meaning "not set" (None).
+_OPTIONAL_PATH_FIELDS: frozenset[str] = frozenset({"i1_path"})
+# Config string values that mean "not set" for an optional path field.
+_EMPTY_PATH_VALUES: frozenset[str] = frozenset({"", "none", "null"})
 
 
 def config_to_dict(cfg: ReductionConfig) -> dict[str, object]:
@@ -267,7 +319,16 @@ def load_config(path: Path) -> ReductionConfig:
             if key not in names:
                 logger.warning(f"Unknown key '{section}.{key}' in {path}; ignoring.")
                 continue
-            kwargs[key] = Path(value) if key in _PATH_FIELDS else value
+            if key in _PATH_FIELDS:
+                if (
+                    key in _OPTIONAL_PATH_FIELDS
+                    and str(value).strip().lower() in _EMPTY_PATH_VALUES
+                ):
+                    kwargs[key] = None
+                else:
+                    kwargs[key] = Path(value)
+            else:
+                kwargs[key] = value
 
     for top_level in ("md_filter",):
         if top_level in raw:
@@ -290,9 +351,10 @@ def validate_inputs(cfg: ReductionConfig) -> list[str]:
     """Check that every input path referenced by the config exists.
 
     Verifies the data directory and its FITS and dark sub-directories are
-    present, that the I0, I1, and mask paths exist and are files, and that at
-    least one ``.fits`` file is present in the FITS sub-directory. Only input
-    paths are checked; ``results_root`` is an output and is created on demand.
+    present, that the I0 and mask paths exist and are files, and that at least
+    one ``.fits`` file is present in the FITS sub-directory. The I1 path is
+    checked only when set (it is optional). Only input paths are checked;
+    ``results_root`` is an output and is created on demand.
 
     Args:
         cfg: The reduction configuration to validate.
@@ -310,11 +372,12 @@ def validate_inputs(cfg: ReductionConfig) -> list[str]:
     if not cfg.dark_path.is_dir():
         problems.append(f"dark sub-directory is not a directory: {cfg.dark_path}")
 
-    for label, path in (
-        ("i0_path", cfg.i0_path),
-        ("i1_path", cfg.i1_path),
-        ("mask_path", cfg.mask_path),
-    ):
+    files_to_check = [("i0_path", cfg.i0_path), ("mask_path", cfg.mask_path)]
+    if cfg.i1_path is None:
+        logger.info("i1_path is not set; reducing without the I1 correction.")
+    else:
+        files_to_check.append(("i1_path", cfg.i1_path))
+    for label, path in files_to_check:
         if not path.is_file():
             problems.append(f"{label} is not a file: {path}")
 

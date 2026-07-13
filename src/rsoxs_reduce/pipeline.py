@@ -64,8 +64,11 @@ def prepare_loader(
     loader.loadSampleSpecificDarks(f"{cfg.dark_path}\\", file_filter=file_filter_str)
     logger.info(f"Loading I0 from {cfg.i0_path}")
     loader.loadSampleSpecificI0(cfg.i0_path)
-    logger.info(f"Loading I1 from {cfg.i1_path}")
-    loader.loadSampleSpecificI1(cfg.i1_path)
+    if cfg.i1_path is None:
+        logger.info("i1_path is not set; skipping the I1 correction.")
+    else:
+        logger.info(f"Loading I1 from {cfg.i1_path}")
+        loader.loadSampleSpecificI1(cfg.i1_path)
 
 
 def load_stack(
@@ -316,6 +319,8 @@ def build_integrator(cfg: ReductionConfig) -> PFEnergySeriesIntegrator:
         NIdistance=cfg.ni_distance,
         NIbcx=cfg.ni_bcx,
         NIbcy=cfg.ni_bcy,
+        NItiltx=cfg.ni_tiltx_deg,
+        NItilty=cfg.ni_tilty_deg,
         NIpixsizex=cfg.ni_pixsize_x,
         NIpixsizey=cfg.ni_pixsize_y,
         integration_method=cfg.integration_method,
