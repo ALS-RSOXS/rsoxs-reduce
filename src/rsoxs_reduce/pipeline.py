@@ -227,12 +227,28 @@ def load_file_batch(
     """
     data_rows: list[xr.DataArray] = []
     dest_coords: dict[str, list[float]] = defaultdict(list)
+    seen: set[tuple[object, ...]] = set()
+    duplicates = 0
     for path in files:
         img = loader.loadSingleImage(str(path), coords={})
+        # Keep the first image for each unique dims coordinate, mirroring
+        # loadFileSeries; otherwise the system MultiIndex has duplicates and
+        # cannot be unstacked.
+        key = tuple(img.attrs[dim] for dim in dims)
+        if key in seen:
+            duplicates += 1
+            logger.debug(f"Skipping duplicate {dict(zip(dims, key))} from {path.name}")
+            continue
+        seen.add(key)
         data_rows.append(img)
         for dim in dims:
             dest_coords[dim].append(img.attrs[dim])
 
+    if duplicates:
+        logger.warning(
+            f"Skipped {duplicates} image(s) sharing a {list(dims)} coordinate "
+            "with an earlier image in this batch (matching loadFileSeries)."
+        )
     if not data_rows:
         raise RuntimeError("Batch contained no loadable images.")
 
