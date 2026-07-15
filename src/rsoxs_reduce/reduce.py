@@ -1,6 +1,7 @@
 """Typer CLI: reduce a single ALS 11.0.1.2 RSoXS energy scan by scan number."""
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
@@ -55,6 +56,7 @@ def _planned_outputs(
         outputs.append(out_dir / "iqchi")
     if plots:
         outputs += [
+            out_dir / f"{sample}_mask_check.png",
             out_dir / f"{sample}_ISIvsE.png",
             out_dir / f"{sample}_Ivsq_overlay_raw.png",
             out_dir / f"{sample}_Ivsq_overlay_q2.png",
@@ -120,6 +122,18 @@ def _ensure_energy_dim(arr: xr.DataArray) -> xr.DataArray:
     return arr if "energy" in arr.dims else arr.expand_dims("energy")
 
 
+@dataclass
+class _StackResult:
+    """Per-stack reduced arrays (and uncertainties) accumulated across batches."""
+
+    iqe: xr.DataArray
+    iqe_sigma: xr.DataArray | None
+    slices: dict[float, xr.DataArray]
+    slice_sigmas: dict[float, xr.DataArray | None]
+    anisotropy: xr.DataArray | None
+    anisotropy_sigma: xr.DataArray | None
+
+
 def _reduce_stack(
     integrator: object,
     stack: xr.DataArray,
@@ -130,13 +144,14 @@ def _reduce_stack(
     iqchi_dir: Path,
     make_plots: bool,
     detector_2d: bool,
-) -> tuple[xr.DataArray, dict[float, xr.DataArray], xr.DataArray | None]:
+) -> "_StackResult":
     """Reduce one image stack and stream its per-energy outputs to disk.
 
     Handles either the whole scan or a single batch. Per-energy files (I(q,chi)
     tables/maps and 2D detector frames) are written here so nothing large is
-    accumulated; the small chi-average, chi-slice, and anisotropy arrays are
-    returned for the caller to concatenate along energy.
+    accumulated; the small chi-average, chi-slice, and anisotropy arrays (and
+    their uncertainties when ``return_sigma`` is set) are returned for the
+    caller to concatenate along energy.
 
     Args:
         integrator: A configured energy-series integrator.
@@ -150,27 +165,51 @@ def _reduce_stack(
         detector_2d: Whether to save 2D detector frames.
 
     Returns:
-        The chi-average I(q, E), a map of chi-slice angle to I(q, E), and the
-        anisotropy A(q, E) (or None if no anisotropy output was requested).
+        A ``_StackResult`` with the chi-average, chi-slice, and anisotropy
+        arrays and their uncertainties (uncertainties are None unless
+        ``return_sigma`` is set).
     """
     from rsoxs_reduce import plotting
     from rsoxs_reduce.pipeline import reduce_to_iqce
 
-    iqce = reduce_to_iqce(integrator, stack, cfg)
-    iqe = _ensure_energy_dim(chi_average(iqce))
-    slice_map = {
-        float(angle): _ensure_energy_dim(slice_chi(iqce, float(angle), cfg.chi_width))
-        for angle in cfg.chi_slices
-    }
+    iqce, iqce_sigma = reduce_to_iqce(integrator, stack, cfg)
+    with_sigma = iqce_sigma is not None
+
+    if with_sigma:
+        iqe_value, iqe_sigma_value = chi_average(iqce, sigma=iqce_sigma)
+        iqe = _ensure_energy_dim(iqe_value)
+        iqe_sigma = _ensure_energy_dim(iqe_sigma_value)
+    else:
+        iqe = _ensure_energy_dim(chi_average(iqce))
+        iqe_sigma = None
+
+    slices: dict[float, xr.DataArray] = {}
+    slice_sigmas: dict[float, xr.DataArray | None] = {}
+    for angle in cfg.chi_slices:
+        key = float(angle)
+        if with_sigma:
+            value, sigma = slice_chi(iqce, key, cfg.chi_width, sigma=iqce_sigma)
+            slices[key] = _ensure_energy_dim(value)
+            slice_sigmas[key] = _ensure_energy_dim(sigma)
+        else:
+            slices[key] = _ensure_energy_dim(slice_chi(iqce, key, cfg.chi_width))
+            slice_sigmas[key] = None
+
     anisotropy: xr.DataArray | None = None
+    anisotropy_sigma: xr.DataArray | None = None
     if cfg.anisotropy or cfg.anisotropy_plot or cfg.integrated_anisotropy:
-        anisotropy = _ensure_energy_dim(compute_anisotropy(iqce, chi_width=cfg.chi_width))
+        if with_sigma:
+            value, sigma = compute_anisotropy(iqce, chi_width=cfg.chi_width, sigma=iqce_sigma)
+            anisotropy = _ensure_energy_dim(value)
+            anisotropy_sigma = _ensure_energy_dim(sigma)
+        else:
+            anisotropy = _ensure_energy_dim(compute_anisotropy(iqce, chi_width=cfg.chi_width))
 
     energies = sorted({float(value) for value in iqce["energy"].values.ravel()})
     if cfg.iqchi_dat:
         for value in energies:
             write_dat(
-                iqchi_to_table(iqce, value),
+                iqchi_to_table(iqce, value, sigma=iqce_sigma),
                 iqchi_dir / f"{sample}_Iqchi_E{value:.1f}eV.dat",
                 header=[*header, "", f"I(q, chi) at E = {value:.1f} eV; columns chi_{{angle}} in deg."],
             )
@@ -192,7 +231,14 @@ def _reduce_stack(
             vmax=cfg.detector_vmax,
             dpi=cfg.detector_dpi,
         )
-    return iqe, slice_map, anisotropy
+    return _StackResult(
+        iqe=iqe,
+        iqe_sigma=iqe_sigma,
+        slices=slices,
+        slice_sigmas=slice_sigmas,
+        anisotropy=anisotropy,
+        anisotropy_sigma=anisotropy_sigma,
+    )
 
 
 def _write_scan_outputs(
@@ -202,14 +248,18 @@ def _write_scan_outputs(
     header: list[str],
     make_plots: bool,
     iqe: xr.DataArray,
+    iqe_sigma: xr.DataArray | None,
     slice_full: dict[float, xr.DataArray],
+    slice_sigma_full: dict[float, xr.DataArray | None],
     anisotropy: xr.DataArray | None,
+    anisotropy_sigma: xr.DataArray | None,
 ) -> None:
     """Write the whole-scan outputs from the accumulated reduced arrays.
 
     These are the outputs that span all energies (wide tables and the
     overlay/waterfall/ISI/anisotropy plots) and so are produced once, after
-    every batch has been reduced.
+    every batch has been reduced. When uncertainties are present they are
+    written as paired columns and drawn on the plots.
 
     Args:
         cfg: Reduction configuration.
@@ -218,23 +268,36 @@ def _write_scan_outputs(
         header: Reproducibility header lines.
         make_plots: Whether plotting is enabled.
         iqe: Chi-average I(q, E) for the full scan.
+        iqe_sigma: Uncertainty of ``iqe``, or None.
         slice_full: Map of chi-slice angle to I(q, E) for the full scan.
+        slice_sigma_full: Map of chi-slice angle to its uncertainty, or None.
         anisotropy: Anisotropy A(q, E) for the full scan, or None.
+        anisotropy_sigma: Uncertainty of ``anisotropy``, or None.
     """
     from rsoxs_reduce import plotting
 
     slice_items = [(angle, slice_full[angle]) for angle in sorted(slice_full)]
+    slice_sigma_items = [
+        (angle, slice_sigma_full[angle])
+        for angle in sorted(slice_full)
+        if slice_sigma_full.get(angle) is not None
+    ]
     slice_note = (
         f" chi slices {cfg.chi_slices} (+/-{cfg.chi_width} deg) appended as "
         "R_{energy}_chi{angle}." if cfg.chi_slices else ""
     )
     write_dat(
-        assemble_iq_table(iqe, slice_items),
+        assemble_iq_table(
+            iqe,
+            slice_items,
+            chi_avg_sigma=iqe_sigma,
+            slice_sigma_items=slice_sigma_items,
+        ),
         results_dir / f"{sample}_Ivsq.dat",
         header=[*header, "", f"Column 1: q; R_{{energy}}: chi-averaged I (eV, to 0.1).{slice_note}"],
     )
 
-    isi = compute_isi(iqe, q_min=cfg.q_min, q_max=cfg.q_max)
+    isi = compute_isi(iqe, q_min=cfg.q_min, q_max=cfg.q_max, sigma=iqe_sigma)
     write_dat(
         isi,
         results_dir / f"{sample}_ISIvsE.dat",
@@ -244,12 +307,14 @@ def _write_scan_outputs(
     integrated = None
     if cfg.anisotropy:
         write_dat(
-            iqe_to_table(anisotropy, prefix="A"),
+            iqe_to_table(anisotropy, prefix="A", sigma=anisotropy_sigma),
             results_dir / f"{sample}_Avsq.dat",
             header=[*header, "", "A = (I_para - I_perp)/(I_para + I_perp); para=0 deg, perp=-90 deg."],
         )
     if cfg.integrated_anisotropy:
-        integrated = integrate_anisotropy(anisotropy, q_min=cfg.q_min, q_max=cfg.q_max)
+        integrated = integrate_anisotropy(
+            anisotropy, q_min=cfg.q_min, q_max=cfg.q_max, sigma=anisotropy_sigma
+        )
         write_dat(
             integrated,
             results_dir / f"{sample}_intAvsE.dat",
@@ -262,6 +327,11 @@ def _write_scan_outputs(
     slice_arrays = {
         f"chi {float(angle):g}": slice_full[angle] for angle in sorted(slice_full)
     }
+    slice_sigma_arrays = {
+        f"chi {float(angle):g}": slice_sigma_full[angle]
+        for angle in sorted(slice_full)
+        if slice_sigma_full.get(angle) is not None
+    }
     plotting.plot_isi(isi, results_dir / f"{sample}_ISIvsE.png", dpi=cfg.plot_dpi)
     for scale in ("raw", "q2"):
         plotting.plot_iq_curves(
@@ -273,6 +343,8 @@ def _write_scan_outputs(
             colormap=cfg.colormap,
             dpi=cfg.plot_dpi,
             slices=slice_arrays,
+            sigma=iqe_sigma,
+            slice_sigmas=slice_sigma_arrays,
         )
         plotting.plot_iq_curves(
             iqe,
@@ -283,6 +355,8 @@ def _write_scan_outputs(
             colormap=cfg.colormap,
             dpi=cfg.plot_dpi,
             slices=slice_arrays,
+            sigma=iqe_sigma,
+            slice_sigmas=slice_sigma_arrays,
         )
     if cfg.anisotropy_plot:
         plotting.plot_anisotropy(
@@ -290,6 +364,7 @@ def _write_scan_outputs(
             results_dir / f"{sample}_Avsq.png",
             colormap=cfg.colormap,
             dpi=cfg.plot_dpi,
+            sigma=anisotropy_sigma,
         )
     if cfg.integrated_anisotropy:
         plotting.plot_integrated_anisotropy(
@@ -297,6 +372,56 @@ def _write_scan_outputs(
             results_dir / f"{sample}_intAvsE.png",
             dpi=cfg.plot_dpi,
         )
+
+
+def _first_image(stack: xr.DataArray) -> "object":
+    """Return the first 2D detector frame from a raw stack (for the mask preview)."""
+    extra = {dim: 0 for dim in stack.dims if dim not in ("pix_x", "pix_y")}
+    return stack.isel(extra).values
+
+
+def _run_mask_check(
+    cfg: ReductionConfig, file_filter: int, sample: str, out_dir: Path
+) -> None:
+    """Write a mask-over-image preview for the scan and nothing else.
+
+    Loads the first detector frame and the oriented mask, saves the overlay so
+    the user can confirm (and adjust) the mask orientation, then returns.
+
+    Args:
+        cfg: Reduction configuration.
+        file_filter: Scan number.
+        sample: Resolved sample name.
+        out_dir: Directory to write the preview into.
+    """
+    from rsoxs_reduce import plotting
+    from rsoxs_reduce.pipeline import (
+        build_loader,
+        enumerate_scan,
+        load_mask,
+        prepare_loader,
+    )
+
+    _validate_or_abort(cfg)
+    loader = build_loader(cfg)
+    prepare_loader(loader, file_filter, cfg)
+    entries, _ = enumerate_scan(loader, file_filter, cfg)
+    if not entries:
+        logger.error("No FITS files found for the scan; cannot check the mask.")
+        raise typer.Exit(code=1)
+
+    image = loader.loadSingleImage(str(entries[0][0]), coords={})
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{sample}_mask_check.png"
+    plotting.plot_mask_overlay(
+        image.values,
+        load_mask(cfg),
+        path,
+        vmin=cfg.detector_vmin,
+        vmax=cfg.detector_vmax,
+        dpi=cfg.plot_dpi,
+    )
+    logger.info(f"Mask-check image written to {path}")
 
 
 @app.command()
@@ -349,6 +474,12 @@ def main(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print planned outputs without loading data or writing."
     ),
+    check_mask: bool = typer.Option(
+        False,
+        "--check-mask",
+        help="Only write a mask-over-first-image preview to verify mask "
+        "orientation, then exit (no reduction).",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging."),
 ) -> None:
     """Reduce one scan and write .dat files and plots under results/{sample}/."""
@@ -371,6 +502,10 @@ def main(
     sample = cfg.sample_name(file_filter)
     out_dir = cfg.results_root / sample
     logger.info(f"Sample {sample!r} (scan {file_filter}); results -> {out_dir}")
+
+    if check_mask:
+        _run_mask_check(cfg, file_filter, sample, out_dir)
+        raise typer.Exit()
 
     planned = _planned_outputs(cfg, out_dir, sample, plots, detector_2d)
 
@@ -459,36 +594,61 @@ def main(
 
     # Reduce each stack, streaming per-energy outputs and accumulating the small
     # reduced arrays. Each raw stack is released before the next is loaded.
-    iqe_parts: list[xr.DataArray] = []
-    slice_parts: dict[float, list[xr.DataArray]] = {
-        float(angle): [] for angle in cfg.chi_slices
-    }
-    aniso_parts: list[xr.DataArray] = []
+    results: list[_StackResult] = []
+    first_image = None
     for stack in stacks:
-        iqe_b, slice_map_b, aniso_b = _reduce_stack(
-            integrator, stack, cfg, sample, results_dir, header, iqchi_dir,
-            plots, detector_2d,
+        if first_image is None and plots:
+            first_image = _first_image(stack)
+        results.append(
+            _reduce_stack(
+                integrator, stack, cfg, sample, results_dir, header, iqchi_dir,
+                plots, detector_2d,
+            )
         )
-        iqe_parts.append(iqe_b)
-        for angle in cfg.chi_slices:
-            slice_parts[float(angle)].append(slice_map_b[float(angle)])
-        if aniso_b is not None:
-            aniso_parts.append(aniso_b)
         del stack
 
-    # Concatenate along energy (a no-op for a single whole-scan stack).
-    iqe = xr.concat(iqe_parts, dim="energy").sortby("energy")
-    slice_full = {
-        float(angle): xr.concat(slice_parts[float(angle)], dim="energy").sortby("energy")
-        for angle in cfg.chi_slices
-    }
-    anisotropy = (
-        xr.concat(aniso_parts, dim="energy").sortby("energy") if aniso_parts else None
-    )
+    def _concat(parts: list[xr.DataArray]) -> xr.DataArray:
+        """Concatenate per-stack arrays along energy (no-op for a single stack)."""
+        return xr.concat(parts, dim="energy").sortby("energy")
+
+    with_sigma = bool(results) and results[0].iqe_sigma is not None
+
+    iqe = _concat([r.iqe for r in results])
+    iqe_sigma = _concat([r.iqe_sigma for r in results]) if with_sigma else None
+
+    slice_full: dict[float, xr.DataArray] = {}
+    slice_sigma_full: dict[float, xr.DataArray | None] = {}
+    for angle in cfg.chi_slices:
+        key = float(angle)
+        slice_full[key] = _concat([r.slices[key] for r in results])
+        slice_sigma_full[key] = (
+            _concat([r.slice_sigmas[key] for r in results]) if with_sigma else None
+        )
+
+    aniso_parts = [r.anisotropy for r in results if r.anisotropy is not None]
+    anisotropy = _concat(aniso_parts) if aniso_parts else None
+    aniso_sigma_parts = [
+        r.anisotropy_sigma for r in results if r.anisotropy_sigma is not None
+    ]
+    anisotropy_sigma = _concat(aniso_sigma_parts) if aniso_sigma_parts else None
 
     _write_scan_outputs(
-        cfg, sample, results_dir, header, plots, iqe, slice_full, anisotropy
+        cfg, sample, results_dir, header, plots, iqe, iqe_sigma, slice_full,
+        slice_sigma_full, anisotropy, anisotropy_sigma,
     )
+
+    # Mask-over-image preview, so the mask orientation is always verifiable.
+    if plots and first_image is not None:
+        from rsoxs_reduce import plotting
+
+        plotting.plot_mask_overlay(
+            first_image,
+            integrator.mask,
+            results_dir / f"{sample}_mask_check.png",
+            vmin=cfg.detector_vmin,
+            vmax=cfg.detector_vmax,
+            dpi=cfg.plot_dpi,
+        )
 
     logger.info("Reduction complete.")
 

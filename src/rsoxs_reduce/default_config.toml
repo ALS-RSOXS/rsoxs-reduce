@@ -34,6 +34,13 @@ ni_tilty = 0.0
 tilt_units = "degrees"   # unit of ni_tiltx/ni_tilty: "degrees" (default) or "radians"
 ni_pixsize_x = 0.0096
 ni_pixsize_y = 0.0096
+# Mask orientation, applied before integration. Defaults reproduce PyHyper's
+# intended nika transform. Use `rsoxs-reduce <scan> --check-mask` to preview the
+# mask over the first detector image and adjust these until it lines up.
+mask_rot90 = 1        # number of 90-degree rotations (0-3)
+mask_flipud = true    # flip vertically after rotation
+mask_fliplr = false   # flip horizontally after rotation
+mask_invert = true    # Nika M_ROIMask is 1=keep; invert to pyFAI 1=exclude
 
 [reduction]
 integration_method = "csr"
@@ -44,6 +51,8 @@ energy_match_decimals = 1
 energies = []            # e.g. [285.2, 286.0, 287.5]
 # q_min = 0.001   # uncomment to bound the ISI integral
 # q_max = 0.05
+# Propagate pyFAI's per-bin uncertainty and add it to output files and plots.
+return_sigma = false
 
 [plotting]
 detector_vmin = 1e-3

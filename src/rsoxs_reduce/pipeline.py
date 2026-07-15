@@ -303,6 +303,58 @@ def setup_common_qgrid(
     )
 
 
+def load_mask(cfg: ReductionConfig) -> np.ndarray:
+    """Load the detector mask and orient it to the pyFAI convention.
+
+    Reads the Nika ``M_ROIMask`` (HDF5) or a TIFF mask, applies the configured
+    rotation/flips, and returns a boolean array where ``True`` marks excluded
+    pixels (pyFAI's convention). This is done here rather than via PyHyper's
+    ``maskmethod="nika"`` because that path never applies its rotation (the
+    ``rotate_image`` flag is checked against kwargs it never lands in), so the
+    mask orientation could not be controlled or trusted.
+
+    Args:
+        cfg: Reduction configuration (mask path and orientation flags).
+
+    Returns:
+        A boolean mask array, ``True`` where pixels are excluded.
+
+    Raises:
+        ValueError: If the mask file extension is not recognized.
+    """
+    path = cfg.mask_path
+    suffix = path.suffix.lower()
+    if suffix in (".h5", ".hdf", ".hdf5"):
+        import h5py
+
+        with h5py.File(path, "r") as handle:
+            raw = np.asarray(handle["M_ROIMask"][:])
+    elif suffix in (".tif", ".tiff"):
+        import matplotlib.pyplot as plt
+
+        raw = np.asarray(plt.imread(path))
+    else:
+        raise ValueError(
+            f"Unsupported mask type '{suffix}' for {path}; expected .hdf/.h5 or .tif."
+        )
+
+    mask = np.rot90(raw, k=cfg.mask_rot90)
+    if cfg.mask_flipud:
+        mask = np.flipud(mask)
+    if cfg.mask_fliplr:
+        mask = np.fliplr(mask)
+    mask = mask.astype(bool)
+    if cfg.mask_invert:
+        mask = np.invert(mask)
+
+    logger.info(
+        f"Loaded mask {path.name}: shape {mask.shape}, {100.0 * mask.mean():.1f}% "
+        f"masked (rot90={cfg.mask_rot90}, flipud={cfg.mask_flipud}, "
+        f"fliplr={cfg.mask_fliplr}, invert={cfg.mask_invert})."
+    )
+    return mask
+
+
 def build_integrator(cfg: ReductionConfig) -> PFEnergySeriesIntegrator:
     """Construct the energy-series azimuthal integrator.
 
@@ -313,8 +365,8 @@ def build_integrator(cfg: ReductionConfig) -> PFEnergySeriesIntegrator:
         A configured integrator instance.
     """
     return PFEnergySeriesIntegrator(
-        maskmethod="nika",
-        maskpath=str(cfg.mask_path),
+        maskmethod="numpy",
+        mask=load_mask(cfg),
         geomethod="nika",
         NIdistance=cfg.ni_distance,
         NIbcx=cfg.ni_bcx,
@@ -324,6 +376,7 @@ def build_integrator(cfg: ReductionConfig) -> PFEnergySeriesIntegrator:
         NIpixsizex=cfg.ni_pixsize_x,
         NIpixsizey=cfg.ni_pixsize_y,
         integration_method=cfg.integration_method,
+        return_sigma=cfg.return_sigma,
     )
 
 
@@ -331,12 +384,16 @@ def reduce_to_iqce(
     integrator: PFEnergySeriesIntegrator,
     data: xr.DataArray,
     cfg: ReductionConfig,
-) -> xr.DataArray:
-    """Integrate the image stack to the chi-resolved I(q, chi, E).
+) -> tuple[xr.DataArray, xr.DataArray | None]:
+    """Integrate the image stack to the chi-resolved I(q, chi, E) and its sigma.
 
     This keeps the azimuthal (``chi``) dimension so that the chi-average, chi
     slices, anisotropy, and full 2D outputs can all be derived downstream from
     a single array.
+
+    When ``cfg.return_sigma`` is set, ``integrateImageStack`` returns a Dataset
+    with ``I`` and ``dI`` variables; these are split into the intensity and its
+    per-bin uncertainty.
 
     Args:
         integrator: A configured integrator.
@@ -344,9 +401,12 @@ def reduce_to_iqce(
         cfg: Reduction configuration.
 
     Returns:
-        Reduced intensity with dimensions ``(chi, q, energy)`` for the selected
-        polarization.
+        A tuple ``(iqce, iqce_sigma)`` of the intensity with dimensions
+        ``(chi, q, energy)`` for the selected polarization and its uncertainty,
+        or ``(iqce, None)`` when ``return_sigma`` is off.
     """
     logger.info("Integrating image stack (this can take several minutes)")
-    integrated = integrator.integrateImageStack(data)
-    return integrated.sel(polarization=cfg.polarization)
+    integrated = integrator.integrateImageStack(data).sel(polarization=cfg.polarization)
+    if cfg.return_sigma:
+        return integrated["I"], integrated["dI"]
+    return integrated, None

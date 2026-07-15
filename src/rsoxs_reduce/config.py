@@ -51,6 +51,12 @@ class ReductionConfig:
             that PyHyperScattering's nika geometry expects.
         ni_pixsize_x: Pixel size in x (mm).
         ni_pixsize_y: Pixel size in y (mm).
+        mask_rot90: Number of 90-degree rotations (numpy ``rot90`` k) applied to
+            the loaded mask.
+        mask_flipud: Whether to flip the mask vertically (after rotation).
+        mask_fliplr: Whether to flip the mask horizontally (after rotation).
+        mask_invert: Whether to invert the mask (Nika ``M_ROIMask`` uses 1=keep,
+            so invert to the pyFAI convention where nonzero=excluded).
         integration_method: pyFAI integration method (``csr`` CPU, ``csr_ocl`` OpenCL).
         polarization: Polarization coordinate value to select after integration.
         stack_dims: Dimensions passed to ``loadFileSeries``.
@@ -59,6 +65,8 @@ class ReductionConfig:
             ``--energy`` CLI option when that is given.
         q_min: Lower q bound for the ISI integral, or None for no lower bound.
         q_max: Upper q bound for the ISI integral, or None for no upper bound.
+        return_sigma: Whether to propagate pyFAI's per-bin uncertainty through
+            the reduction and include it in the output files and plots.
         detector_vmin: Lower bound of the 2D detector log color scale.
         detector_vmax: Upper bound of the 2D detector log color scale.
         detector_dpi: Output resolution for 2D detector frames.
@@ -108,12 +116,20 @@ class ReductionConfig:
     ni_pixsize_x: float = 0.0096
     ni_pixsize_y: float = 0.0096
 
+    # Mask orientation (applied to the loaded mask before integration). The
+    # defaults reproduce PyHyperScattering's intended nika transform.
+    mask_rot90: int = 1
+    mask_flipud: bool = True
+    mask_fliplr: bool = False
+    mask_invert: bool = True
+
     # Reduction / selection.
     integration_method: str = "csr"
     polarization: str = "0"
     energy_match_decimals: int = 1
     q_min: float | None = None
     q_max: float | None = None
+    return_sigma: bool = False
 
     # Plotting.
     detector_vmin: float = 1e-3
@@ -225,6 +241,10 @@ _SECTIONS: dict[str, tuple[str, ...]] = {
         "tilt_units",
         "ni_pixsize_x",
         "ni_pixsize_y",
+        "mask_rot90",
+        "mask_flipud",
+        "mask_fliplr",
+        "mask_invert",
     ),
     "reduction": (
         "integration_method",
@@ -233,6 +253,7 @@ _SECTIONS: dict[str, tuple[str, ...]] = {
         "energies",
         "q_min",
         "q_max",
+        "return_sigma",
     ),
     "plotting": (
         "detector_vmin",
