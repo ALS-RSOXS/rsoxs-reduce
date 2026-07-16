@@ -376,6 +376,7 @@ def build_integrator(cfg: ReductionConfig) -> PFEnergySeriesIntegrator:
         NIpixsizex=cfg.ni_pixsize_x,
         NIpixsizey=cfg.ni_pixsize_y,
         integration_method=cfg.integration_method,
+        npts=cfg.q_bins,
         return_sigma=cfg.return_sigma,
     )
 

@@ -15,6 +15,9 @@ from scipy.integrate import trapezoid
 
 logger = logging.getLogger(__name__)
 
+# q is returned in inverse Angstrom (pyFAI 'q_A^-1'); 1 A^-1 = 1e8 cm^-1.
+_INV_ANGSTROM_TO_INV_CM = 1e8
+
 
 def select_energies(
     data: xr.DataArray,
@@ -131,6 +134,11 @@ def compute_isi(
 
         ISI(E) = integral of I(q, E) * q**2 dq
 
+    The q-values are converted from inverse Angstrom to inverse centimeter for
+    the ``q**2 dq`` factor, so the q-contribution to ISI is in ``cm^-3``; with a
+    thickness-normalized intensity in ``cm^-1`` the ISI is then in ``cm^-4``.
+    (The q coordinate reported elsewhere remains in inverse Angstrom.)
+
     When ``sigma`` is given, the uncertainty is propagated through the (linear)
     trapezoidal integral as ``dISI = sqrt(sum((w_k * q_k**2 * dI_k)**2))`` over
     the same surviving points, with ``w_k`` the trapezoid weights.
@@ -178,20 +186,54 @@ def compute_isi(
             continue
 
         order = np.argsort(q_e)
-        q_e = q_e[order]
         i_e = i_e[order]
-        integrand = i_e * q_e**2
-        isi_values.append(float(trapezoid(integrand, q_e)))
+        q_cm = q_e[order] * _INV_ANGSTROM_TO_INV_CM
+        integrand = i_e * q_cm**2
+        isi_values.append(float(trapezoid(integrand, q_cm)))
         if sigma is not None:
-            weights = _trapezoid_weights(q_e)
+            weights = _trapezoid_weights(q_cm)
             disi_values.append(
-                float(np.sqrt(np.sum((weights * q_e**2 * s_e[order]) ** 2)))
+                float(np.sqrt(np.sum((weights * q_cm**2 * s_e[order]) ** 2)))
             )
 
     columns = {"energy": energies, "ISI": isi_values}
     if sigma is not None:
         columns["dISI"] = disi_values
     return pd.DataFrame(columns)
+
+
+def apply_thickness(
+    value: xr.DataArray,
+    sigma: xr.DataArray | None,
+    thickness_cm: float,
+    rel_uncertainty: float = 0.0,
+) -> tuple[xr.DataArray, xr.DataArray | None]:
+    """Normalize an intensity-like quantity by sample thickness.
+
+    Divides ``value`` (and its statistical uncertainty) by the thickness in cm.
+    The thickness uncertainty is a fully-correlated relative term, so it is added
+    in quadrature to the *final* quantity's uncertainty here — this helper must be
+    applied to a reported quantity, after any chi average or q integration, never
+    to a per-bin array that is then averaged (which would wrongly shrink it).
+
+    Args:
+        value: Intensity-like quantity to normalize.
+        sigma: Its statistical uncertainty, or None.
+        thickness_cm: Sample thickness in cm.
+        rel_uncertainty: Relative thickness uncertainty (``delta_t / t``); pass 0
+            to omit (e.g. when the thickness uncertainty is not set).
+
+    Returns:
+        The thickness-normalized value and its uncertainty (None if ``sigma``
+        was None).
+    """
+    normalized = value / thickness_cm
+    if sigma is None:
+        return normalized, None
+    combined = np.sqrt(
+        (sigma / thickness_cm) ** 2 + (normalized * rel_uncertainty) ** 2
+    )
+    return normalized, combined
 
 
 def chi_average(

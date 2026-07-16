@@ -46,6 +46,9 @@ mask_invert = true    # Nika M_ROIMask is 1=keep; invert to pyFAI 1=exclude
 integration_method = "csr"
 polarization = "0"
 energy_match_decimals = 1
+# Number of radial q points in the output (pyFAI npts). Fewer points bundle more
+# detector pixels per q bin (coarser resolution); binning is linear in q.
+q_bins = 500
 # Only reduce these energies (eV), matched to energy_match_decimals. Empty or
 # omitted = all energies. The --energy CLI option overrides this list.
 energies = []            # e.g. [285.2, 286.0, 287.5]
@@ -53,6 +56,12 @@ energies = []            # e.g. [285.2, 286.0, 287.5]
 # q_max = 0.05
 # Propagate pyFAI's per-bin uncertainty and add it to output files and plots.
 return_sigma = false
+# Sample thickness for intensity normalization (I and ISI are divided by the
+# thickness in cm). Omit sample_thickness to skip. The uncertainty is folded
+# into the propagated error only when return_sigma = true.
+thickness_units = "nm"   # nm (default), um, mm, cm, or m
+# sample_thickness = 100.0
+# sample_thickness_uncertainty = 5.0
 
 [plotting]
 detector_vmin = 1e-3

@@ -28,12 +28,24 @@ def _package_version(name: str) -> str:
         return "unknown"
 
 
+def _format_duration(seconds: float) -> str:
+    """Format an elapsed time in seconds as a compact human-readable string."""
+    if seconds < 60.0:
+        return f"{seconds:.1f} s"
+    minutes, secs = divmod(seconds, 60.0)
+    if minutes < 60.0:
+        return f"{int(minutes)}m {secs:04.1f}s"
+    hours, minutes = divmod(int(minutes), 60)
+    return f"{hours}h {minutes:02d}m {secs:04.1f}s"
+
+
 def build_header(
     cfg: ReductionConfig,
     file_filter: int,
     sample: str,
     energies: Sequence[float],
     config_path: Path,
+    elapsed_seconds: float | None = None,
 ) -> list[str]:
     """Assemble the reproducibility header lines (without the leading '# ').
 
@@ -43,6 +55,8 @@ def build_header(
         sample: The resolved sample name.
         energies: The energies requested via ``--energy`` (empty means all).
         config_path: The config file that was loaded.
+        elapsed_seconds: Wall-clock processing time to record under the
+            timestamp, or None to omit the line.
 
     Returns:
         A list of plain-text lines; the writer is responsible for comment prefixes.
@@ -57,6 +71,10 @@ def build_header(
         _RULE,
         f"rsoxs-reduction v{__version__}",
         f"Generated: {generated}",
+    ]
+    if elapsed_seconds is not None:
+        lines.append(f"Processing time: {_format_duration(elapsed_seconds)}")
+    lines += [
         _SUBRULE,
         "[run]",
         f"scan_number = {file_filter}",

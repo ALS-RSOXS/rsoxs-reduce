@@ -63,10 +63,19 @@ class ReductionConfig:
         energy_match_decimals: Decimal places used when matching energy values.
         energies: Energies (eV) to reduce; empty means all. Overridden by the
             ``--energy`` CLI option when that is given.
+        q_bins: Number of radial q points in the output (pyFAI ``npts``); fewer
+            bins bundle more pixels per point (coarser q resolution).
         q_min: Lower q bound for the ISI integral, or None for no lower bound.
         q_max: Upper q bound for the ISI integral, or None for no upper bound.
         return_sigma: Whether to propagate pyFAI's per-bin uncertainty through
             the reduction and include it in the output files and plots.
+        sample_thickness: Sample thickness for intensity normalization (in
+            ``thickness_units``), or None to skip thickness normalization.
+        sample_thickness_uncertainty: Uncertainty on ``sample_thickness`` (same
+            units); folded into the propagated uncertainty when ``return_sigma``
+            is set.
+        thickness_units: Unit of the thickness values, converted to cm before
+            normalization (``"nm"`` default; also ``um``/``mm``/``cm``/``m``).
         detector_vmin: Lower bound of the 2D detector log color scale.
         detector_vmax: Upper bound of the 2D detector log color scale.
         detector_dpi: Output resolution for 2D detector frames.
@@ -127,9 +136,13 @@ class ReductionConfig:
     integration_method: str = "csr"
     polarization: str = "0"
     energy_match_decimals: int = 1
+    q_bins: int = 500
     q_min: float | None = None
     q_max: float | None = None
     return_sigma: bool = False
+    sample_thickness: float | None = None
+    sample_thickness_uncertainty: float | None = None
+    thickness_units: str = "nm"
 
     # Plotting.
     detector_vmin: float = 1e-3
@@ -192,6 +205,50 @@ class ReductionConfig:
             f"tilt_units must be 'degrees' or 'radians', got {self.tilt_units!r}."
         )
 
+    def _thickness_in_cm(self, value: float) -> float:
+        """Convert a length from the configured ``thickness_units`` to cm.
+
+        Args:
+            value: Length value in ``thickness_units``.
+
+        Returns:
+            The length in centimeters.
+
+        Raises:
+            ValueError: If ``thickness_units`` is not a recognized length unit.
+        """
+        factors = {
+            "nm": 1e-7,
+            "um": 1e-4,
+            "µm": 1e-4,
+            "micron": 1e-4,
+            "microns": 1e-4,
+            "mm": 1e-1,
+            "cm": 1.0,
+            "m": 1e2,
+        }
+        units = self.thickness_units.strip().lower()
+        if units not in factors:
+            raise ValueError(
+                f"thickness_units must be one of {sorted(factors)}, "
+                f"got {self.thickness_units!r}."
+            )
+        return value * factors[units]
+
+    @property
+    def sample_thickness_cm(self) -> float | None:
+        """Sample thickness in cm, or None if not set."""
+        if self.sample_thickness is None:
+            return None
+        return self._thickness_in_cm(self.sample_thickness)
+
+    @property
+    def sample_thickness_uncertainty_cm(self) -> float | None:
+        """Sample-thickness uncertainty in cm, or None if not set."""
+        if self.sample_thickness_uncertainty is None:
+            return None
+        return self._thickness_in_cm(self.sample_thickness_uncertainty)
+
     @property
     def ni_tiltx_deg(self) -> float:
         """Detector x tilt in degrees, converted from the configured unit."""
@@ -251,9 +308,13 @@ _SECTIONS: dict[str, tuple[str, ...]] = {
         "polarization",
         "energy_match_decimals",
         "energies",
+        "q_bins",
         "q_min",
         "q_max",
         "return_sigma",
+        "sample_thickness",
+        "sample_thickness_uncertainty",
+        "thickness_units",
     ),
     "plotting": (
         "detector_vmin",

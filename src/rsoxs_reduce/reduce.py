@@ -1,6 +1,7 @@
 """Typer CLI: reduce a single ALS 11.0.1.2 RSoXS energy scan by scan number."""
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import typer
 import xarray as xr
 
 from rsoxs_reduce.analysis import (
+    apply_thickness,
     assemble_iq_table,
     chi_average,
     compute_anisotropy,
@@ -122,6 +124,19 @@ def _ensure_energy_dim(arr: xr.DataArray) -> xr.DataArray:
     return arr if "energy" in arr.dims else arr.expand_dims("energy")
 
 
+def _thickness_params(cfg: ReductionConfig) -> tuple[float | None, float]:
+    """Return ``(thickness_cm, relative_uncertainty)`` for the configured thickness.
+
+    ``thickness_cm`` is None when no thickness is set (no normalization); the
+    relative uncertainty is 0 unless a thickness uncertainty is also set.
+    """
+    thickness_cm = cfg.sample_thickness_cm
+    if thickness_cm is None:
+        return None, 0.0
+    unc_cm = cfg.sample_thickness_uncertainty_cm
+    return thickness_cm, (unc_cm / thickness_cm if unc_cm is not None else 0.0)
+
+
 @dataclass
 class _StackResult:
     """Per-stack reduced arrays (and uncertainties) accumulated across batches."""
@@ -207,9 +222,18 @@ def _reduce_stack(
 
     energies = sorted({float(value) for value in iqce["energy"].values.ravel()})
     if cfg.iqchi_dat:
+        # The 2D .dat carries the thickness-normalized intensity; the heatmap
+        # plot below stays on the raw detector scale for display.
+        thickness_cm, rel_t = _thickness_params(cfg)
+        if thickness_cm is None:
+            iqce_out, iqce_sigma_out = iqce, iqce_sigma
+        else:
+            iqce_out, iqce_sigma_out = apply_thickness(
+                iqce, iqce_sigma, thickness_cm, rel_t
+            )
         for value in energies:
             write_dat(
-                iqchi_to_table(iqce, value, sigma=iqce_sigma),
+                iqchi_to_table(iqce_out, value, sigma=iqce_sigma_out),
                 iqchi_dir / f"{sample}_Iqchi_E{value:.1f}eV.dat",
                 header=[*header, "", f"I(q, chi) at E = {value:.1f} eV; columns chi_{{angle}} in deg."],
             )
@@ -276,6 +300,37 @@ def _write_scan_outputs(
     """
     from rsoxs_reduce import plotting
 
+    thickness_cm, rel_t = _thickness_params(cfg)
+    thickness_note = (
+        f" Intensity normalized by sample thickness t = {thickness_cm:g} cm."
+        if thickness_cm is not None else ""
+    )
+
+    # ISI from the (raw) chi-average; compute_isi converts q to cm^-1 for the
+    # q^2 dq factor. Thickness normalization (a global scale, so the thickness
+    # uncertainty is a correlated relative term) is applied to the final ISI.
+    isi = compute_isi(iqe, q_min=cfg.q_min, q_max=cfg.q_max, sigma=iqe_sigma)
+    if thickness_cm is not None:
+        isi["ISI"] = isi["ISI"] / thickness_cm
+        if "dISI" in isi.columns:
+            isi["dISI"] = (
+                (isi["dISI"] / thickness_cm) ** 2 + (isi["ISI"] * rel_t) ** 2
+            ) ** 0.5
+    isi_units = "cm^-4" if thickness_cm is not None else "(intensity units) * cm^-3"
+    write_dat(
+        isi,
+        results_dir / f"{sample}_ISIvsE.dat",
+        header=[*header, "", f"ISI = integral of I(q,E) * q^2 dq (q in cm^-1), units {isi_units}; NaN/negative dropped.{thickness_note}"],
+    )
+
+    # Thickness-normalize the chi-average and slices for the wide table + plots.
+    if thickness_cm is not None:
+        iqe, iqe_sigma = apply_thickness(iqe, iqe_sigma, thickness_cm, rel_t)
+        for angle in list(slice_full):
+            slice_full[angle], slice_sigma_full[angle] = apply_thickness(
+                slice_full[angle], slice_sigma_full.get(angle), thickness_cm, rel_t
+            )
+
     slice_items = [(angle, slice_full[angle]) for angle in sorted(slice_full)]
     slice_sigma_items = [
         (angle, slice_sigma_full[angle])
@@ -294,22 +349,16 @@ def _write_scan_outputs(
             slice_sigma_items=slice_sigma_items,
         ),
         results_dir / f"{sample}_Ivsq.dat",
-        header=[*header, "", f"Column 1: q; R_{{energy}}: chi-averaged I (eV, to 0.1).{slice_note}"],
+        header=[*header, "", f"Column 1: q; R_{{energy}}: chi-averaged I (eV, to 0.1).{slice_note}{thickness_note}"],
     )
 
-    isi = compute_isi(iqe, q_min=cfg.q_min, q_max=cfg.q_max, sigma=iqe_sigma)
-    write_dat(
-        isi,
-        results_dir / f"{sample}_ISIvsE.dat",
-        header=[*header, "", "ISI = integral of I(q,E) * q^2 dq; NaN/negative dropped."],
-    )
-
+    # Anisotropy is a ratio, so it is independent of sample thickness (t cancels).
     integrated = None
     if cfg.anisotropy:
         write_dat(
             iqe_to_table(anisotropy, prefix="A", sigma=anisotropy_sigma),
             results_dir / f"{sample}_Avsq.dat",
-            header=[*header, "", "A = (I_para - I_perp)/(I_para + I_perp); para=0 deg, perp=-90 deg."],
+            header=[*header, "", "A = (I_para - I_perp)/(I_para + I_perp); para=0 deg, perp=-90 deg; thickness-independent."],
         )
     if cfg.integrated_anisotropy:
         integrated = integrate_anisotropy(
@@ -318,7 +367,7 @@ def _write_scan_outputs(
         write_dat(
             integrated,
             results_dir / f"{sample}_intAvsE.dat",
-            header=[*header, "", "int_A = integral of A(q,E) dq over [q_min, q_max]."],
+            header=[*header, "", "int_A = integral of A(q,E) dq over [q_min, q_max] (q in A^-1); thickness-independent."],
         )
 
     if not make_plots:
@@ -487,6 +536,7 @@ def main(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    start_time = time.monotonic()
 
     config_path = resolve_config_path(config)
     logger.info(f"Using config: {config_path}")
@@ -632,8 +682,17 @@ def main(
     ]
     anisotropy_sigma = _concat(aniso_sigma_parts) if aniso_sigma_parts else None
 
+    # Rebuild the header with the total processing time for the summary files.
+    final_header = build_header(
+        cfg,
+        file_filter,
+        sample,
+        requested_energies,
+        config_path,
+        elapsed_seconds=time.monotonic() - start_time,
+    )
     _write_scan_outputs(
-        cfg, sample, results_dir, header, plots, iqe, iqe_sigma, slice_full,
+        cfg, sample, results_dir, final_header, plots, iqe, iqe_sigma, slice_full,
         slice_sigma_full, anisotropy, anisotropy_sigma,
     )
 
@@ -650,7 +709,7 @@ def main(
             dpi=cfg.plot_dpi,
         )
 
-    logger.info("Reduction complete.")
+    logger.info(f"Reduction complete in {time.monotonic() - start_time:.1f} s.")
 
 
 def cli() -> None:
